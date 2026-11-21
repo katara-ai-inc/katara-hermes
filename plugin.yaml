@@ -1,0 +1,10 @@
+name: katara
+version: 0.1.0
+description: "Katara memory — recall facts and Brain/Wiki knowledge from your Katara organization before each turn, remember and forget facts, and mirror Hermes's built-in memory writes, over Katara's MCP memory API."
+author: Katara
+requires_hermes: ">=0.22.0"
+requires_env:
+  - name: KATARA_API_KEY
+    description: "Katara API token (Organization → API access) with the Memory read grant, plus Memory write to save facts"
+    url: https://app.katara.ai
+    secret: true

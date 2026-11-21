@@ -1,0 +1,15 @@
+[project]
+name = "katara-hermes"
+version = "0.1.0"
+description = "Hermes Agent memory provider plugin: Katara"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# No runtime dependencies: the plugin uses httpx, which Hermes ships as a core dependency.
+dependencies = []
+
+# The plugin is loaded from a directory by Hermes, not installed as a distribution.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
