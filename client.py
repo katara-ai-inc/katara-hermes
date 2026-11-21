@@ -58,8 +58,8 @@ def _http_error(status: int, body: str) -> KataraError:
     hint = {
         401: ("unauthorized", "Katara rejected the API key (401). Check KATARA_API_KEY and that the token "
                               "has not expired or been revoked."),
-        403: ("forbidden", "Katara denied access (403). The API token needs the Memory read grant "
-                           "(and Memory write to remember/forget) for this organization."),
+        403: ("forbidden", "Katara denied access (403). The API token needs the Agent read and Memory read "
+                           "grants (and Memory write to remember/forget) for this organization."),
         404: ("endpoint_not_found", "Katara MCP endpoint not found (404). Check the configured MCP URL."),
         413: ("too_large", "Request too large for Katara (413)."),
         428: ("precondition", "Katara organization is not ready yet (428)."),

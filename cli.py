@@ -34,6 +34,10 @@ def _status(args) -> int:
         return 0
     except KataraError as exc:
         print(f"  error:     {exc}")
+        if exc.code == "scope_denied":
+            print("  fix:       Give the token the Agent read + Memory read grants (Memory write to save facts) in\n"
+                  "             Katara → Organization → API access. The token's owner must be able to view the Brain\n"
+                  "             (edit it for writes); a Personal Brain works only with a token owned by its owner.")
         if exc.payload.get("detail") == "DEFAULT_SOURCE_REQUIRED":
             print("  fix:       In Katara, open Organization → API access and choose this token's default memory\n"
                   "             source (a Brain), or set source_id with `hermes memory setup` / KATARA_SOURCE_ID.")

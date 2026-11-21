@@ -205,12 +205,13 @@ class KataraMemoryProvider(MemoryProvider):
         return bool((get_secret(API_KEY_ENV, "") or "").strip())
 
     def unavailable_reason(self) -> str:
-        return (f"Set {API_KEY_ENV} to a Katara API token with the Memory read grant (and Memory write to save "
+        return (f"Set {API_KEY_ENV} to a Katara API token with the Agent read and Memory read grants "
+                "(and Memory write to save "
                 "facts): Katara → Organization → API access. Then run `hermes memory setup`.")
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
-            {"key": "api_key", "description": "Katara API token (Memory read + Memory write grants)",
+            {"key": "api_key", "description": "Katara API token (Agent read + Memory read + Memory write grants)",
              "secret": True, "required": True, "env_var": API_KEY_ENV, "url": _API_KEY_URL},
             {"key": "source_id", "description": "Katara memory source / Brain alias (blank = the token's saved default)",
              "default": ""},

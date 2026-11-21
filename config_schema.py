@@ -26,7 +26,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             kind=KIND_SECRET,
             env_key="KATARA_API_KEY",
             placeholder="Enter Katara API token",
-            description="Katara → Organization → API access. Grant Memory read (and Memory write to save facts).",
+            description="Katara → Organization → API access. Grant Agent read + Memory read (and Memory write to save facts).",
             inline=True,
         ),
         ProviderField(
