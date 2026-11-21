@@ -28,8 +28,9 @@ deduplicates the retry. Subagents, cron runs and other non-primary agents never 
 - A Katara organization with a **Brain**.
 - A Katara **API token** for that organization:
   1. In Katara, open **Organization → API access** and create a token.
-  2. Grant **Agent read** and **Memory read**, plus **Memory write** if the agent should save and forget
-     facts. Without write, set `read_only` (see below).
+  2. Grant **Agent read**, **Memory read** and **Document read**, plus **Memory write** if the agent should
+     save and forget facts. Without write, set `read_only` (see below). Without Document read, recall
+     covers facts and Wiki pages only (the plugin falls back automatically and logs it once).
   3. The token acts on behalf of the person who owns it, so that person must be able to **view** the Brain
      (and **edit** it for writes). A **Personal** Brain works only with a token owned by the Brain's owner.
   4. Select the token's **default memory source** (a Brain-backed source) in the same screen, or set
@@ -60,7 +61,7 @@ The environment variables in the table override the file.
 
 | Key | Env override | Default | Meaning |
 |---|---|---|---|
-| API token | `KATARA_API_KEY` | (required) | Organization API token with Agent read + Memory read (+ Memory write) |
+| API token | `KATARA_API_KEY` | (required) | Organization API token with Agent read + Memory read + Document read (+ Memory write) |
 | `source_id` | `KATARA_SOURCE_ID` | token default | Brain-backed source alias used for every call |
 | `auto_recall` | | `true` | Recall before each turn |
 | `mirror_memory_writes` | | `true` | Mirror built-in memory additions/edits as Katara facts |
@@ -93,7 +94,8 @@ These are the things to know before you install:
 | Message | Fix |
 |---|---|
 | `Katara rejected the API key (401)` | The token is wrong, expired or revoked; create a new one |
-| `Katara denied access (403)` | Add the Agent read and Memory read (and Memory write) grants to the token |
+| `Katara denied access (403)` | Add the Agent read, Memory read and Document read (and Memory write) grants to the token |
+| Warning: "cannot search original sources" | The token lacks Document read; recall still covers facts and Wiki pages |
 | `scope_denied` / `SCOPE_DENIED` ("The current credential cannot perform this operation") | The token is missing Agent read, Memory read or (for writes) Memory write, or its owner cannot view/edit the Brain (Personal Brains: owner only) |
 | `DEFAULT_SOURCE_REQUIRED` ("Configure an authorized Brain-backed default QnA alias…") | The token has no default memory source: choose one for the token in Katara (Organization → API access), or set `source_id` |
 | `Katara rate limit reached (429)` | Lower usage or wait; automatic recall skips silently on errors |

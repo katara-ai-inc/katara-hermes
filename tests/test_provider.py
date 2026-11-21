@@ -33,13 +33,28 @@ class ProviderTestCase(unittest.TestCase):
             "entity": lambda a: {"protocol_version": 1, "found": True, "latency_ms": 3,
                                  "card": {"entity": {"slug": "people/alice", "title": "Alice", "type": "person"}}},
             "remember": self._remember,
-            "forget": lambda a: {"protocol_version": 1, "id": a["id"], "expired": True, "reason": a.get("reason")},
+            "forget": self._forget,
         })
 
+    # Shapes recorded from the live endpoint: the fact id is top-level ``id``; status/fact_id live in the
+    # committed write receipt's outcome.
     def _remember(self, args):
         self.remembered.append(args)
-        return {"protocol_version": 1, "status": "inserted", "fact_id": f"f-{len(self.remembered) + 10}",
-                "id": len(self.remembered) + 10}
+        fact_id = f"f-{len(self.remembered) + 10}"
+        return {"protocol_version": 1, "id": fact_id, "entity_slug": None, "degraded_dedup": False,
+                "katara": {"write_request": {
+                    "request_id": args.get("request_id"), "state": "committed", "retry_after_ms": None,
+                    "outcome": {"fact_id": fact_id, "legacy_id": 1, "created": True, "status": "inserted",
+                                "status_text": "Fact stored.", "entity_slug": None, "valid_until": None,
+                                "expired": False, "protocol_version": 1},
+                    "persistence": {"mode": "database"}, "compacted": False}}}
+
+    def _forget(self, args):
+        return {"protocol_version": 1, "id": args["id"], "expired": True, "reason": args.get("reason"),
+                "katara": {"write_request": {
+                    "request_id": args.get("request_id"), "state": "committed", "retry_after_ms": None,
+                    "outcome": {"fact_id": args["id"], "withdrawn": True, "expired": True,
+                                "reason": args.get("reason")}}}}
 
     def provider(self, *, transport=None, **init_kwargs):
         provider = katara.KataraMemoryProvider(transport=transport or self.fake.transport)
@@ -165,6 +180,37 @@ class RecallTests(ProviderTestCase):
             self.assertEqual(provider.prefetch("q"), "")
         self.assertEqual([r.levelname for r in logs.records], ["DEBUG"])
 
+    def _deny_original_sources(self):
+        denied = {"error": "scope_denied", "message": "The current credential cannot perform this operation.",
+                  "detail": "PERMISSION_DENIED", "protocol_version": 1}
+        self.fake.tools["recall"] = lambda a: (
+            (denied, True) if a.get("query") and a.get("evidence_kind") in (None, "brain", "original_sources")
+            else RECALL_PAYLOAD)
+
+    def test_token_without_document_read_falls_back_to_wiki_once(self):
+        self._deny_original_sources()
+        provider = self.provider()
+        with self.assertLogs(katara.logger, level="WARNING") as logs:
+            self.assertIn("<katara-memory>", provider.prefetch("first question"))
+            self.assertIn("<katara-memory>", provider.prefetch("second question"))
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("Document read", logs.records[0].getMessage())
+        lanes = [c["arguments"].get("evidence_kind") for c in self.fake.calls("recall")]
+        self.assertEqual(lanes, [None, "wiki", "wiki"])  # denied once, then straight to wiki
+
+    def test_explicit_lane_is_never_narrowed(self):
+        self._deny_original_sources()
+        out = json.loads(self.provider().handle_tool_call(
+            "katara_recall", {"query": "x", "evidence_kind": "original_sources"}))
+        self.assertEqual(out["code"], "scope_denied")
+        self.assertEqual(len(self.fake.calls("recall")), 1)
+
+    def test_recall_tool_notes_the_wiki_fallback(self):
+        self._deny_original_sources()
+        out = json.loads(self.provider().handle_tool_call("katara_recall", {"query": "x"}))
+        self.assertEqual(out["total"], 2)
+        self.assertIn("Wiki only", out["note"])
+
     def test_empty_recall_injects_nothing(self):
         self.fake.tools["recall"] = lambda a: {"protocol_version": 1, "facts": [], "results": [], "total": 0}
         provider = self.provider()
@@ -216,7 +262,7 @@ class ToolTests(ProviderTestCase):
     def test_remember_tool_sends_provenance_and_request_id(self):
         out = self.call(self.provider(), "katara_remember",
                         {"fact": "Ships on Fridays", "entity": "Katara", "kind": "commitment", "ttl": "30d"})
-        self.assertEqual(out, {"status": "inserted", "fact_id": "f-11", "id": 11})
+        self.assertEqual(out, {"status": "inserted", "fact_id": "f-11"})
         sent = self.remembered[0]
         self.assertEqual((sent["fact"], sent["entity"], sent["kind"], sent["ttl"]),
                          ("Ships on Fridays", "Katara", "commitment", "30d"))
@@ -237,7 +283,7 @@ class ToolTests(ProviderTestCase):
 
     def test_forget_tool(self):
         out = self.call(self.provider(), "katara_forget", {"fact_id": "f-1", "reason": "outdated"})
-        self.assertEqual(out, {"id": "f-1", "expired": True, "reason": "outdated"})
+        self.assertEqual(out, {"fact_id": "f-1", "expired": True, "reason": "outdated"})
         self.assertIn("request_id", self.fake.calls("forget")[0]["arguments"])
 
     def test_katara_tool_error_is_reported_with_suggestion(self):

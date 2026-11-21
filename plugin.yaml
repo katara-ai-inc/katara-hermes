@@ -5,6 +5,6 @@ author: Katara
 requires_hermes: ">=0.22.0"
 requires_env:
   - name: KATARA_API_KEY
-    description: "Katara API token (Organization → API access) with the Agent read and Memory read grants, plus Memory write to save facts"
+    description: "Katara API token (Organization → API access) with the Agent read, Memory read and Document read grants, plus Memory write to save facts"
     url: https://app.katara.ai
     secret: true

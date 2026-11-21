@@ -193,6 +193,7 @@ class KataraMemoryProvider(MemoryProvider):
         self._lock = threading.Lock()
         self._last_recall: Optional[RecallStatus] = None
         self._config_warned = False
+        self._lane_fallback = ""  # "wiki" once the token proved unable to search original sources
         self._threads: list[threading.Thread] = []
 
     @property
@@ -314,10 +315,10 @@ class KataraMemoryProvider(MemoryProvider):
         if not self._client or not self._settings.get("auto_recall") or not (query or "").strip():
             return ""
         try:
-            payload = self._client.call_tool(
-                "recall",
+            payload = self._recall(
                 self._recall_args(query, limit=self._settings["recall_limit"],
                                   budget_tokens=self._settings["recall_budget_tokens"]),
+                lane_pinned=bool(self._settings.get("evidence_kind")),
                 timeout=self._settings["recall_timeout"],
             )
         except KataraError as exc:
@@ -329,13 +330,37 @@ class KataraMemoryProvider(MemoryProvider):
                 self._last_recall = RecallStatus(provider_label="Katara", count=count)
         return text
 
+    def _recall(self, call_args: dict[str, Any], *, lane_pinned: bool,
+                timeout: Optional[float] = None) -> dict[str, Any]:
+        """``recall`` that degrades to the Wiki lane when the token cannot search original sources.
+
+        Searching uploaded documents needs the Document read grant on top of Memory read. Without it the
+        default ``brain`` lane is denied outright; facts + Wiki still work, so use them (warning once)
+        rather than injecting nothing. A lane the user or model chose explicitly is never narrowed.
+        """
+        narrowable = not lane_pinned and bool(call_args.get("query"))
+        if narrowable and self._lane_fallback:
+            call_args = {**call_args, "evidence_kind": self._lane_fallback}
+        try:
+            return self._client.call_tool("recall", call_args, timeout=timeout)
+        except KataraError as exc:
+            if (not narrowable or call_args.get("evidence_kind") == "wiki" or exc.code != "scope_denied"
+                    or exc.payload.get("detail") != "PERMISSION_DENIED"):
+                raise
+        with self._lock:
+            first, self._lane_fallback = not self._lane_fallback, "wiki"
+        if first:
+            logger.warning("Katara memory: this token cannot search original sources (it needs the Document "
+                           "read grant); recalling facts and Wiki pages only.")
+        return self._client.call_tool("recall", {**call_args, "evidence_kind": "wiki"}, timeout=timeout)
+
     def _log_failure(self, what: str, exc: KataraError) -> None:
         """Background failures are silent to the user; configuration errors get one warning per instance."""
         if is_config_error(exc):
             with self._lock:
                 first, self._config_warned = not self._config_warned, True
             if first:
-                logger.warning("Katara memory %s failed: %s Run `hermes katara status` to check the setup.", what, exc)
+                logger.warning("Katara %s failed: %s Run `hermes katara status` to check the setup.", what, exc)
                 return
         logger.debug("Katara %s failed (%s): %s", what, exc.code, exc)
 
@@ -375,9 +400,13 @@ class KataraMemoryProvider(MemoryProvider):
         if evidence and evidence not in _EVIDENCE_KINDS:
             raise _ArgError(f"evidence_kind must be one of {', '.join(_EVIDENCE_KINDS)}")
         limit = _clamp(args.get("limit"), self._settings["recall_limit"], 1, 50, int)
-        payload = self._client.call_tool("recall", self._recall_args(
-            query, entity=entity, limit=limit, evidence_kind=evidence, since=str(args.get("since") or "")))
-        return _trim_recall(payload)
+        payload = self._recall(self._recall_args(
+            query, entity=entity, limit=limit, evidence_kind=evidence, since=str(args.get("since") or "")),
+            lane_pinned=bool(evidence or self._settings.get("evidence_kind")))
+        out = _trim_recall(payload)
+        if query and self._lane_fallback and not (evidence or self._settings.get("evidence_kind")):
+            out["note"] = "Searched facts and Wiki only: this Katara token cannot search original source documents."
+        return out
 
     def _tool_entity(self, args: dict[str, Any]) -> dict[str, Any]:
         name = str(args.get("name") or "").strip()
@@ -430,8 +459,7 @@ class KataraMemoryProvider(MemoryProvider):
             raise _ArgError(f"kind must be one of {', '.join(_KINDS)}")
         payload = self._remember(fact, kind=kind, entity=str(args.get("entity") or ""),
                                  ttl=str(args.get("ttl") or ""))
-        return {k: payload[k] for k in ("status", "fact_id", "id", "entity_slug", "write_request")
-                if payload.get(k) not in (None, "")} or payload
+        return _write_summary(payload, ("status", "fact_id", "entity_slug", "valid_until"))
 
     def _tool_forget(self, args: dict[str, Any]) -> dict[str, Any]:
         fact_id = str(args.get("fact_id") or args.get("id") or "").strip()
@@ -444,8 +472,7 @@ class KataraMemoryProvider(MemoryProvider):
         if self._settings.get("source_id"):
             call_args["source_id"] = self._settings["source_id"]
         payload = self._write("forget", call_args)
-        payload.pop("protocol_version", None)
-        return payload
+        return _write_summary(payload, ("fact_id", "expired", "reason"))
 
     # -- built-in memory mirroring -------------------------------------------------------------
 
@@ -471,6 +498,26 @@ class KataraMemoryProvider(MemoryProvider):
         thread = spawn_context_thread(_mirror, name="katara-memory-mirror")
         self._threads.append(thread)
         thread.start()
+
+
+def _write_summary(payload: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """Model-facing result of remember/forget.
+
+    Katara answers writes with a top-level ``id`` (the fact id) plus the committed outcome under
+    ``katara.write_request.outcome`` (``status``, ``fact_id``, ``expired``...); the frozen protocol shape puts
+    ``status``/``fact_id`` at the top level. Accept both and drop the receipt plumbing.
+    """
+    katara = payload.get("katara") if isinstance(payload.get("katara"), dict) else {}
+    receipt = katara.get("write_request") or payload.get("write_request") or {}
+    receipt = receipt if isinstance(receipt, dict) else {}
+    outcome = receipt.get("outcome") if isinstance(receipt.get("outcome"), dict) else {}
+    merged = {**outcome, **{k: v for k, v in payload.items() if v is not None}}
+    if not merged.get("fact_id"):
+        merged["fact_id"] = merged.get("id")
+    out = {k: merged[k] for k in keys if merged.get(k) not in (None, "")}
+    if receipt.get("state") and receipt.get("state") != "committed":
+        out["write_state"] = receipt["state"]
+    return out
 
 
 class _ArgError(ValueError):
